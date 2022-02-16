@@ -10,27 +10,29 @@ const stripeSecret = process.env.STRIPE_SECRET || "mock"
 const stripeEPSecret = process.env.STRIPE_ENDPOINT_SECRET || 'mock'
 const stripe = new Stripe(stripeSecret, { apiVersion: '2020-08-27' })
 
-const sql = mysql.createConnection({
+const pool = mysql.createPool({
+    connectionLimit: 5,
     host: process.env.DB_HOST,
     user: process.env.DB_USER,
     password: process.env.DB_PASS,
     database: 'stripe'
 })
 
-sql.connect((err) => {
-    if (err) {
-        debugDB(err.message)
-    } else {
-        debugDB('connection ok')
-    }
-})
+async function getSqlConnection(): Promise<mysql.PoolConnection> {
+    return new Promise((resolve, reject) => {
+        pool.getConnection((error, connection) => {
+            if (error) reject(error)
+            resolve(connection)
+        })
+    })
+}
 
 v1.get('/', (req, res, next) => {
     debugServer(req.url)
-    res.send({ version: "1", pk: stripePublic})
+    res.send({ version: "1", pk: stripePublic })
 })
 
-v1.post('/webhook', raw({ type: 'application/json' }), (req, res, next) => {
+v1.post('/webhook', raw({ type: 'application/json' }), async (req, res, next) => {
     debugServer(JSON.stringify(req.body))
     const sig = req.headers['stripe-signature'] || ""
     let event: Stripe.Event
@@ -40,7 +42,7 @@ v1.post('/webhook', raw({ type: 'application/json' }), (req, res, next) => {
         res.status(400).send(err.message)
         return
     }
-
+    const sql = await getSqlConnection()
     sql.query('INSERT INTO events SET ?', { data: JSON.stringify(event) }, (error, response) => {
         if (error) {
             debugDB(error.message)
@@ -48,7 +50,8 @@ v1.post('/webhook', raw({ type: 'application/json' }), (req, res, next) => {
             debugDB(JSON.stringify(response))
         }
     })
-
+    sql.commit()
+    sql.release()
     res.send({ code: "ok" })
 })
 
